@@ -1,28 +1,90 @@
+# OpenJarvis + Ollama, ready to run with Docker Compose.
+#
+# Easiest:   ./install.sh            (creates .env with an API key, builds,
+#                                     pulls the model, waits until healthy)
+# Manually:  cp .env.example .env    # then set OPENJARVIS_API_KEY
+#            docker compose up -d --build
+#
+# Every knob below is read from deploy/docker/.env (see .env.example).
+# GPU variants: add -f docker-compose.gpu.nvidia.yml or -f docker-compose.gpu.rocm.yml
+# (install.sh --gpu nvidia|rocm records that choice in .env as COMPOSE_FILE).
+
+name: openjarvis
+
+x-logging: &default-logging
+  # Rotate container logs so a long-running install cannot fill the disk.
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   jarvis:
+    image: ${OPENJARVIS_IMAGE:-openjarvis:local}
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
-    ports:
-      - "8000:8000"
+      args:
+        # Passed through only when set in .env / the shell; otherwise the
+        # Dockerfile default (server + cloud SDKs) applies.
+        - OPENJARVIS_EXTRAS
+    command:
+      - serve
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --model
+      - ${OPENJARVIS_MODEL:-qwen3.5:2b}
+    # Optional extra variables (cloud keys, tool/channel tokens, ...) go in
+    # .env and are handed to the server as-is.
+    env_file:
+      - path: .env
+        required: false
     environment:
-      - OPENJARVIS_ENGINE_DEFAULT=ollama
-      - OLLAMA_HOST=http://ollama:11434
-      # The container binds 0.0.0.0, so an API key is REQUIRED. Compose fails
-      # fast if OPENJARVIS_API_KEY is unset (set it in deploy/docker/.env —
-      # see .env.example, or `export` it). Generate one: `jarvis auth generate-key`.
-      - OPENJARVIS_API_KEY=${OPENJARVIS_API_KEY:?OPENJARVIS_API_KEY must be set (see deploy/docker/.env.example)}
+      OLLAMA_HOST: http://ollama:11434
+      # The container binds 0.0.0.0, so an API key is REQUIRED: the server
+      # refuses to start on a non-loopback address without one. Compose fails
+      # fast if it is unset (install.sh generates one into .env).
+      OPENJARVIS_API_KEY: ${OPENJARVIS_API_KEY:?OPENJARVIS_API_KEY must be set (run ./install.sh or see deploy/docker/.env.example)}
+    ports:
+      # Loopback-only by default. Set OPENJARVIS_BIND=0.0.0.0 in .env to reach
+      # the server from other machines (put TLS in front of it for anything
+      # beyond a trusted LAN: the API key travels in every request).
+      - "${OPENJARVIS_BIND:-127.0.0.1}:${OPENJARVIS_PORT:-8000}:8000"
+    volumes:
+      # config.toml, memory/traces/telemetry DBs, credentials, skills.
+      - openjarvis-data:/home/openjarvis/.openjarvis
+    init: true
+    healthcheck:
+      # The slim image has no curl; /health is unauthenticated and returns 503
+      # when the inference engine is unreachable, which urlopen raises on.
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
     depends_on:
       ollama:
         condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
     restart: unless-stopped
+    logging: *default-logging
 
   ollama:
     # Pinned to a fixed version + digest for reproducible deployments and
     # predictable rollbacks (#563). Bump deliberately, not implicitly via :latest.
     image: ollama/ollama:0.30.10@sha256:bfc9c6d53cc6989aa5131a6fde6b162b2802d4d337657f3253b5f69579bddeee
     ports:
-      - "11434:11434"
+      # Ollama has no authentication of its own, so it is only published on
+      # loopback (for host-side tooling). The jarvis container reaches it over
+      # the internal Compose network regardless of this mapping.
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama-models:/root/.ollama
     healthcheck:
@@ -32,6 +94,38 @@ services:
       retries: 10
       start_period: 10s
     restart: unless-stopped
+    logging: *default-logging
+
+  # One-shot init job: makes sure the served model (plus any extras listed in
+  # OLLAMA_PULL) exists before jarvis starts, because `jarvis serve` exits when
+  # no model is available. Models already in the volume are not re-downloaded,
+  # so restarts work offline. Update a model later with:
+  #   docker compose exec ollama ollama pull <model>
+  ollama-pull:
+    image: ollama/ollama:0.30.10@sha256:bfc9c6d53cc6989aa5131a6fde6b162b2802d4d337657f3253b5f69579bddeee
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      # Space-separated list. Defaults to the served model; set OLLAMA_PULL=
+      # (empty) to skip pulling, e.g. for a cloud-only setup.
+      OLLAMA_PULL: ${OLLAMA_PULL-${OPENJARVIS_MODEL:-qwen3.5:2b}}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        for model in $$OLLAMA_PULL; do
+          if ollama show "$$model" >/dev/null 2>&1; then
+            echo "Model $$model is already available."
+          else
+            echo "Pulling $$model (first run only; this can take a few minutes)..."
+            ollama pull "$$model"
+          fi
+        done
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+    logging: *default-logging
 
 volumes:
   ollama-models:
+  openjarvis-data:

@@ -10,6 +10,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+**One-command Docker install.** `deploy/docker/install.sh` creates
+`deploy/docker/.env` with a generated API key, builds the image, pulls the
+model with visible progress, starts the stack and waits for the health check
+(`--model`, `--gpu cpu|nvidia|rocm`, `--port`, `--lan`; safe to re-run as the
+update path). The Compose stack now pulls the served model in a one-shot
+`ollama-pull` job before starting the server (previously `jarvis` crash-looped
+until a model was pulled by hand), persists `~/.openjarvis` in a named volume,
+has a health check and log rotation, keeps the unauthenticated Ollama port on
+loopback, and reads every setting (model, port, bind address, cloud keys) from
+`.env`. Server images bundle the Anthropic and Google SDKs by default
+(`OPENJARVIS_EXTRAS` build argument), and a root `.dockerignore` keeps `.git`,
+local `.env` files and host `node_modules` out of the build context.
+
 **Apple Foundation Models (AFM 3)** — a new in-process `afm` engine drives
 Apple's `apple-fm-sdk` directly, with no HTTP hop and no second process whose
 CPU draw would land inside the same energy measurement window. Install with
@@ -66,6 +79,11 @@ stack with `mss`/`Pillow` fallbacks on other platforms. Adds the
 (default `16384`).
 
 ### Fixed
+
+**Docker images build again.** All Dockerfiles pinned Rust 1.88 while the
+workspace requires 1.89 (`uuid` 1.27), so every image build failed in the
+native-extension step. The images now use the toolchain from
+`rust/rust-toolchain.toml`, and a test keeps the two in sync.
 
 **Apple Silicon energy was never measured, only modelled.**
 `telemetry/energy_apple.py` imported `AppleSiliconMonitor` from

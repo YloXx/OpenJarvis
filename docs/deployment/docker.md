@@ -1,385 +1,304 @@
 # Docker Deployment
 
-OpenJarvis provides Docker images for both CPU-only and GPU-accelerated deployments, along with a Docker Compose configuration that bundles the API server with an Ollama inference backend.
+OpenJarvis ships a ready-to-run Docker Compose stack: the OpenJarvis API server
+with its web UI, an [Ollama](https://ollama.com) inference backend, and a
+one-shot job that downloads the model on first start. CPU, NVIDIA and AMD ROCm
+image variants are available.
 
-## Quick Start
+## Quick Start (one command)
 
-The container binds `0.0.0.0`, so an **API key is required** — the server
-refuses to start on a non-loopback address without one. Set it first:
+Requirements: Docker Engine with the Compose v2 plugin (**2.24 or newer**), and
+about 10 GB of free disk space for the image and a small model.
+
+```bash
+git clone https://github.com/open-jarvis/OpenJarvis.git
+cd OpenJarvis
+deploy/docker/install.sh
+```
+
+The installer:
+
+1. checks that Docker and Compose are usable;
+2. creates `deploy/docker/.env` from `.env.example` and generates a random
+   `OPENJARVIS_API_KEY` (an existing `.env` and key are kept);
+3. builds the image (the first build compiles the Rust extension and takes
+   several minutes);
+4. starts Ollama and pulls the model (`qwen3.5:2b` by default), showing the
+   download progress;
+5. starts OpenJarvis and waits until its health check passes;
+6. prints the URL and the API key.
+
+Open the printed URL (default <http://127.0.0.1:8000>), go to
+**Settings → API key** and paste the key. That's it.
+
+### Installer options
+
+| Option | Effect |
+|---|---|
+| `--model NAME` | Ollama model to serve and pre-pull, e.g. `qwen3.5:9b` |
+| `--gpu cpu\|nvidia\|rocm` | Image variant. `nvidia` requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) |
+| `--port N` | Host port for the web UI + API (default `8000`) |
+| `--bind ADDR` / `--lan` | Host interface to publish on. Default `127.0.0.1` (this machine only); `--lan` publishes on `0.0.0.0` |
+
+Every choice is written to `deploy/docker/.env` (the GPU variant as
+`COMPOSE_FILE`), so plain `docker compose ...` commands run from
+`deploy/docker/` keep using the same settings. Re-running the installer is
+safe and is also the update path:
+
+```bash
+git pull && deploy/docker/install.sh
+```
+
+## Manual Setup
+
+If you prefer to drive Compose yourself:
 
 ```bash
 cd deploy/docker
 cp .env.example .env
+# Set OPENJARVIS_API_KEY in .env, for example:
+sed -i "s/^OPENJARVIS_API_KEY=.*/OPENJARVIS_API_KEY=$(openssl rand -hex 32)/" .env
+docker compose up -d --build
+```
+
+Compose refuses to start if `OPENJARVIS_API_KEY` is empty: the container binds
+`0.0.0.0`, and the server will not listen on a non-loopback address without a
+key. The first `up` waits for the model download before starting the server;
+follow it with `docker compose logs -f ollama-pull`.
+
+For a GPU host add the matching override file:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.nvidia.yml up -d --build
+```
+
+## What Runs
+
+| Service | Port (host) | Description |
+|---|---|---|
+| `jarvis` | `127.0.0.1:8000` | OpenJarvis API server (OpenAI-compatible `/v1`) and web UI |
+| `ollama` | `127.0.0.1:11434` | Ollama inference engine. Loopback only: Ollama has no authentication |
+| `ollama-pull` | – | One-shot job that pulls missing models, then exits |
+
+`jarvis` starts only after Ollama is healthy and `ollama-pull` has finished,
+because `jarvis serve` exits when no model is available. Models already in the
+volume are not downloaded again, so restarts also work offline. All services
+restart automatically (`unless-stopped`) and their logs are rotated (3 × 10 MB).
+
+## Configuration
+
+All settings live in `deploy/docker/.env` (see `.env.example` for the
+commented template). The whole file is also passed to the OpenJarvis
+container, so any other variable OpenJarvis reads (for example tool or channel
+tokens) can be added there too.
+
+| Variable | Default | Description |
+|---|---|---|
+| `OPENJARVIS_API_KEY` | – (required) | Bearer key for `/v1/*` and `/api/*` |
+| `OPENJARVIS_MODEL` | `qwen3.5:2b` | Default model served by OpenJarvis |
+| `OLLAMA_PULL` | `$OPENJARVIS_MODEL` | Space-separated models to pre-pull; empty skips pulling |
+| `OPENJARVIS_BIND` | `127.0.0.1` | Host interface for the web UI + API |
+| `OPENJARVIS_PORT` | `8000` | Host port for the web UI + API |
+| `OLLAMA_PORT` | `11434` | Host port for Ollama (always loopback) |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` | – | Enable cloud models next to the local ones |
+| `OPENJARVIS_EXTRAS` | `server inference-cloud inference-google` | Optional-dependency groups baked into the image (build time; must include `server`) |
+| `OPENJARVIS_IMAGE` | `openjarvis:local` | Image tag to build/run (`openjarvis:local-cuda` / `-rocm` for the GPU variants) |
+| `COMPOSE_FILE` | `docker-compose.yml` | Set by `install.sh --gpu` to include a GPU override |
+
+After changing `.env`, apply it with `docker compose up -d` (add `--build`
+when you changed `OPENJARVIS_EXTRAS`).
+
+### Reaching OpenJarvis from other devices
+
+Set `OPENJARVIS_BIND=0.0.0.0` (or run `install.sh --lan`). The API key is sent
+with every request, so on anything other than a trusted network put a TLS
+reverse proxy (Caddy, Traefik, nginx) in front of port 8000 instead of exposing
+it directly.
+
+### Using a cloud model
+
+Add a provider key to `.env` and point the server at one of its models, for
+example:
+
+```bash
+OPENAI_API_KEY=sk-...
+OPENJARVIS_MODEL=gpt-4o-mini
+OLLAMA_PULL=            # nothing to download for a cloud-only setup
+```
+
+Local Ollama models stay available alongside the cloud ones.
+
+## Using the API
+
+```bash
+KEY=$(grep '^OPENJARVIS_API_KEY=' deploy/docker/.env | cut -d= -f2-)
+
+curl http://127.0.0.1:8000/health            # no key needed
+
+curl http://127.0.0.1:8000/v1/models -H "Authorization: Bearer $KEY"
+
+curl http://127.0.0.1:8000/v1/chat/completions \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"model": "qwen3.5:2b", "messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
+Any OpenAI-compatible client works with base URL `http://127.0.0.1:8000/v1`
+and the key as its API key.
+
+## Data and Persistence
+
+Two named volumes hold all state:
+
+| Volume | Mounted at | Contents |
+|---|---|---|
+| `openjarvis_openjarvis-data` | `/home/openjarvis/.openjarvis` | `config.toml`, memory / traces / telemetry databases, saved credentials, skills |
+| `openjarvis_ollama-models` | `/root/.ollama` (in `ollama`) | Downloaded models |
+
+`docker compose down` keeps both; `docker compose down -v` deletes them.
+
+Back up the OpenJarvis data volume:
+
+```bash
+docker run --rm -v openjarvis_openjarvis-data:/data -v "$PWD":/backup \
+  python:3.12-slim tar czf /backup/openjarvis-data.tgz -C /data .
+```
+
+!!! note "Upgrading from an older Compose file"
+    Earlier versions of `docker-compose.yml` had no project name, so Compose
+    derived it from the directory (`docker`) and named the model volume
+    `docker_ollama-models`. The stack is now named `openjarvis`. To keep using
+    already-downloaded models, either run once with `COMPOSE_PROJECT_NAME=docker`
+    or copy the old volume into `openjarvis_ollama-models`.
+
+### Custom `config.toml`
+
+The server reads `~/.openjarvis/config.toml`, which is
+`/home/openjarvis/.openjarvis/config.toml` inside the container (it runs as
+the unprivileged `openjarvis` user, UID 10001). Write a config into the data
+volume as that user (so OpenJarvis can still update it) and restart:
+
+```bash
+docker compose exec -T jarvis sh -c 'umask 077; cat > ~/.openjarvis/config.toml' < my-config.toml
+docker compose restart jarvis
+```
+
+The `--model` passed by the Compose file (`OPENJARVIS_MODEL`) takes precedence
+over the model in `config.toml`.
+
+## GPU Acceleration
+
+### NVIDIA
+
+```bash
+deploy/docker/install.sh --gpu nvidia
+```
+
+This uses `Dockerfile.gpu` (CUDA 12.4 runtime) for the server and reserves all
+GPUs for both the server and Ollama, so local inference runs on the GPU. The
+host needs the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+
+### AMD ROCm
+
+```bash
+deploy/docker/install.sh --gpu rocm
+```
+
+This uses `Dockerfile.gpu.rocm` and passes `/dev/kfd` and `/dev/dri` to the
+server container. The bundled Ollama service keeps the CPU image; for GPU
+inference through Ollama on AMD, switch its image to Ollama's `-rocm` variant
+and give it the same devices.
+
+## Standalone Image
+
+Build the image from the repository root:
+
+```bash
+docker build -f deploy/docker/Dockerfile -t openjarvis:local .
+```
+
+The build is multi-stage and reproducible: the frontend is built in a pinned
+`node` stage, Python dependencies are installed from the committed `uv.lock`
+(`uv export --frozen`, no re-resolution), the native Rust extension is compiled
+with the toolchain from `rust/rust-toolchain.toml`, and the runtime stage is a
+slim Python image running as the unprivileged `openjarvis` user. All base
+images are pinned by digest.
+
+Select optional dependencies with a build argument:
+
+```bash
+docker build -f deploy/docker/Dockerfile -t openjarvis:local \
+  --build-arg OPENJARVIS_EXTRAS="server inference-cloud memory-faiss" .
+```
+
+Run it standalone (state persisted in a named volume):
+
+```bash
 export OPENJARVIS_API_KEY="$(openssl rand -hex 32)"
+docker run -d --name openjarvis \
+  -e OPENJARVIS_API_KEY \
+  -v openjarvis-data:/home/openjarvis/.openjarvis \
+  -p 127.0.0.1:8000:8000 \
+  openjarvis:local
 ```
 
-Then start both the API server and an Ollama backend with Docker Compose:
+### Running the image against a host Ollama server
 
-```bash
-docker compose up -d
-```
-
-`docker compose` reads `OPENJARVIS_API_KEY` from `.env` (or your shell
-environment) and fails fast if it is unset. Clients must then send
-`Authorization: Bearer <key>` on `/v1/*` and `/api/*` requests.
-Keep this key available in your shell, or save its value in `.env` for later
-Compose invocations. The example uses OpenSSL to generate a random key.
-
-This brings up two services:
-
-| Service  | Port  | Description                        |
-|----------|-------|------------------------------------|
-| `jarvis` | 8000  | OpenJarvis API server              |
-| `ollama` | 11434 | Ollama inference engine            |
-
-Verify the server is running:
-
-```bash
-curl http://localhost:8000/health
-```
-
-Expected response:
-
-```json
-{"status": "ok"}
-```
-
-## Docker Images
-
-### CPU-Only Image (`Dockerfile`)
-
-The default `Dockerfile` uses a multi-stage build based on `python:3.12-slim` to produce a minimal image.
-
-**Build stages:**
-
-1. **Builder stage** -- installs `uv` and the `openjarvis[server]` package (which includes FastAPI, uvicorn, and all server dependencies) from the project source.
-2. **Runtime stage** -- copies only the installed Python packages and application code from the builder, keeping the final image small.
-
-```dockerfile
-FROM python:3.12-slim AS builder
-
-WORKDIR /app
-COPY pyproject.toml README.md ./
-COPY src/ src/
-
-RUN pip install --no-cache-dir uv && \
-    uv pip install --system ".[server]"
-
-FROM python:3.12-slim
-
-COPY --from=builder /usr/local /usr/local
-COPY --from=builder /app /app
-WORKDIR /app
-
-EXPOSE 8000
-
-ENTRYPOINT ["jarvis"]
-CMD ["serve", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-Build it manually from the repository root:
-
-```bash
-docker build -f deploy/docker/Dockerfile -t openjarvis:latest .
-```
-
-Run it standalone:
-
-```bash
-docker run -d -e OPENJARVIS_API_KEY -p 127.0.0.1:8000:8000 openjarvis:latest
-```
-
-### Running the built image with a host Ollama server
-
-Use the `openjarvis:latest` image built above. Ollama must already be running
-on the host with a model installed and listening on an address reachable from
-containers. On Linux, its default loopback-only binding is not reachable via
-the Docker host gateway; configure its binding using the
+Ollama must already be running on the host with a model installed and
+listening on an address reachable from containers. On Linux, its default
+loopback-only binding is not reachable via the Docker host gateway; configure
+its binding using the
 [Ollama server instructions](https://docs.ollama.com/faq#how-do-i-configure-ollama-server)
 and restrict access to trusted container traffic.
 
-Set an API key and map each container to a different loopback host port:
-
 ```bash
-export OPENJARVIS_API_KEY="$(openssl rand -hex 32)"
-
-docker run -d --name openjarvis-8001 \
+docker run -d --name openjarvis \
   -e OPENJARVIS_API_KEY \
   -e OLLAMA_HOST=http://host.docker.internal:11434 \
+  -v openjarvis-data:/home/openjarvis/.openjarvis \
   -p 127.0.0.1:8001:8000 \
   --add-host host.docker.internal:host-gateway \
-  openjarvis:latest serve --engine ollama --host 0.0.0.0 --port 8000
-
-docker run -d --name openjarvis-8003 \
-  -e OPENJARVIS_API_KEY \
-  -e OLLAMA_HOST=http://host.docker.internal:11434 \
-  -p 127.0.0.1:8003:8000 \
-  --add-host host.docker.internal:host-gateway \
-  openjarvis:latest serve --engine ollama --host 0.0.0.0 --port 8000
+  openjarvis:local serve --engine ollama --host 0.0.0.0 --port 8000
 ```
 
-The API is available at `http://localhost:8001` and
-`http://localhost:8003`. Keep the API key out of source control; the commands
-read it from the shell environment.
+Map each additional container to a different host port to run several
+instances side by side.
 
-### GPU Image (`Dockerfile.gpu`)
+### Overriding the command
 
-The GPU image is built on `nvidia/cuda:12.4.0-runtime-ubuntu22.04` and includes the CUDA 12.4 runtime libraries, enabling GPU-accelerated inference when paired with a GPU-capable engine like vLLM or SGLang.
-
-```dockerfile
-FROM nvidia/cuda:12.4.0-runtime-ubuntu22.04 AS builder
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3 python3-pip python3-venv && \
-    rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-COPY pyproject.toml README.md ./
-COPY src/ src/
-
-RUN pip install --no-cache-dir uv && \
-    uv pip install --system ".[server]"
-
-FROM nvidia/cuda:12.4.0-runtime-ubuntu22.04
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3 python3-pip && \
-    rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /usr/local /usr/local
-COPY --from=builder /app /app
-WORKDIR /app
-
-EXPOSE 8000
-
-ENTRYPOINT ["jarvis"]
-CMD ["serve", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-Build the GPU image:
+The entrypoint is `jarvis` and the default command is
+`serve --host 0.0.0.0 --port 8000`, so any CLI subcommand can be run:
 
 ```bash
-docker build -f Dockerfile.gpu -t openjarvis:gpu .
+docker run --rm -e OPENJARVIS_API_KEY openjarvis:local --help
+docker compose exec jarvis jarvis --version
 ```
 
-Run with GPU access (requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)):
+Available options for `jarvis serve`:
 
-```bash
-docker run -d --gpus all -p 8000:8000 openjarvis:gpu
-```
-
-!!! note "NVIDIA Container Toolkit required"
-    The host machine must have the NVIDIA Container Toolkit installed for `--gpus` to work. See the [NVIDIA installation guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) for setup instructions.
-
-## Docker Compose Configuration
-
-The `docker-compose.yml` defines a complete deployment with the OpenJarvis API server and an Ollama backend:
-
-```yaml
-version: "3.9"
-
-services:
-  jarvis:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    environment:
-      - OPENJARVIS_ENGINE_DEFAULT=ollama
-      - OPENJARVIS_OLLAMA_HOST=http://ollama:11434
-    depends_on:
-      - ollama
-    restart: unless-stopped
-
-  ollama:
-    image: ollama/ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama-models:/root/.ollama
-    restart: unless-stopped
-
-volumes:
-  ollama-models:
-```
-
-### Environment Variables
-
-The `jarvis` service is configured through environment variables:
-
-| Variable                      | Description                                             | Default                    |
-|-------------------------------|---------------------------------------------------------|----------------------------|
-| `OPENJARVIS_ENGINE_DEFAULT`   | Inference engine backend to use                         | `ollama`                   |
-| `OPENJARVIS_OLLAMA_HOST`      | URL of the Ollama server (uses Docker service name)     | `http://ollama:11434`      |
-
-### Volumes
-
-The `ollama-models` named volume persists downloaded models across container restarts, so models do not need to be re-pulled after a `docker compose down` / `docker compose up` cycle.
-
-### Service Dependencies
-
-The `jarvis` service declares `depends_on: ollama`, ensuring the Ollama container starts before the API server. Both services use `restart: unless-stopped` to automatically recover from crashes.
-
-## Custom Configuration
-
-### Mounting a Configuration File
-
-To use a custom `config.toml`, mount it into the container at the expected path (`~/.openjarvis/config.toml`, which is `/root/.openjarvis/config.toml` in the container):
-
-```yaml
-services:
-  jarvis:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./my-config.toml:/root/.openjarvis/config.toml:ro
-    environment:
-      - OPENJARVIS_ENGINE_DEFAULT=ollama
-      - OPENJARVIS_OLLAMA_HOST=http://ollama:11434
-    depends_on:
-      - ollama
-    restart: unless-stopped
-```
-
-### Persisting Data
-
-To persist telemetry data, memory databases, and trace records across container restarts, mount the entire OpenJarvis data directory:
-
-```yaml
-services:
-  jarvis:
-    # ... other config ...
-    volumes:
-      - openjarvis-data:/root/.openjarvis
-
-volumes:
-  ollama-models:
-  openjarvis-data:
-```
-
-This preserves:
-
-- `telemetry.db` -- inference call telemetry records
-- `memory.db` -- the default SQLite memory backend
-- `traces.db` -- interaction trace records
-- `config.toml` -- user configuration
-
-### Using the GPU Image with Compose
-
-To use the GPU Dockerfile in your Compose setup, change the `dockerfile` field and add GPU resource reservations:
-
-```yaml
-services:
-  jarvis:
-    build:
-      context: .
-      dockerfile: Dockerfile.gpu
-    ports:
-      - "8000:8000"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    environment:
-      - OPENJARVIS_ENGINE_DEFAULT=ollama
-      - OPENJARVIS_OLLAMA_HOST=http://ollama:11434
-    depends_on:
-      - ollama
-    restart: unless-stopped
-```
+| Option | Description |
+|---|---|
+| `--host` | Bind address (default: from config, typically `127.0.0.1`) |
+| `--port` | Port number (default: from config, typically `8000`) |
+| `-e` / `--engine` | Engine backend (`ollama`, `vllm`, `llamacpp`, `sglang`, `cloud`, ...) |
+| `-m` / `--model` | Default model name |
+| `-a` / `--agent` | Agent for chat requests (`simple`, `orchestrator`, `react`, `openhands`) |
 
 ## Health Check
 
-The API server exposes a `GET /health` endpoint that checks whether the underlying inference engine is responsive:
+`GET /health` needs no API key and reports whether the inference engine is
+reachable: HTTP 200 `{"status": "ok"}` when healthy, HTTP 503 otherwise. The
+Compose file uses it as the container health check (with Python, since the
+slim image has no `curl`), so `docker compose ps` shows `healthy` once the
+server is ready.
 
-```bash
-curl http://localhost:8000/health
-```
+## Troubleshooting
 
-A healthy response returns HTTP 200:
-
-```json
-{"status": "ok"}
-```
-
-An unhealthy engine returns HTTP 503:
-
-```json
-{"detail": "Engine unhealthy"}
-```
-
-You can integrate this into your Docker Compose healthcheck:
-
-```yaml
-services:
-  jarvis:
-    # ... other config ...
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
-```
-
-## Building Custom Images
-
-### Adding Extra Dependencies
-
-To include additional engine backends (such as vLLM or ColBERT memory), modify the install command in the Dockerfile:
-
-```dockerfile
-RUN pip install --no-cache-dir uv && \
-    uv pip install --system ".[server,inference-vllm,memory-colbert]"
-```
-
-### Overriding the Default Command
-
-The entrypoint is `jarvis` and the default command is `serve --host 0.0.0.0 --port 8000`. Override the command to change server options:
-
-```bash
-docker run -d -p 9000:9000 openjarvis:latest \
-  serve --host 0.0.0.0 --port 9000 --engine ollama --model qwen3:8b
-```
-
-Or in Docker Compose:
-
-```yaml
-services:
-  jarvis:
-    build: .
-    command: ["serve", "--host", "0.0.0.0", "--port", "9000", "--model", "qwen3:8b"]
-    ports:
-      - "9000:9000"
-```
-
-### Available CLI Options for `jarvis serve`
-
-| Option               | Description                                         |
-|----------------------|-----------------------------------------------------|
-| `--host`             | Bind address (default: from config, typically `0.0.0.0`) |
-| `--port`             | Port number (default: from config, typically `8000`)     |
-| `-e` / `--engine`    | Engine backend (`ollama`, `vllm`, `llamacpp`, `sglang`)  |
-| `-m` / `--model`     | Default model name                                       |
-| `-a` / `--agent`     | Agent for non-streaming requests (`simple`, `orchestrator`, `react`, `openhands`) |
-
-## Pulling Models
-
-After starting the Ollama container, you need to pull at least one model before the API server can serve requests:
-
-```bash
-docker compose exec ollama ollama pull qwen3:8b
-```
-
-Verify models are available through the API:
-
-```bash
-curl http://localhost:8000/v1/models
-```
+| Symptom | Fix |
+|---|---|
+| `required variable OPENJARVIS_API_KEY is missing a value` | Run `install.sh`, or set the key in `deploy/docker/.env` |
+| `jarvis` never starts, `ollama-pull` exited with an error | Check `docker compose logs ollama-pull`: usually no internet access or a misspelled model name. Fix `OPENJARVIS_MODEL` and run `docker compose up -d` |
+| `jarvis` is `unhealthy` | `docker compose logs jarvis`; `/health` returns 503 while Ollama is unreachable |
+| `port is already allocated` | Choose another port: `install.sh --port 8080` |
+| `permission denied ... docker.sock` | Add your user to the `docker` group (log out and back in) or use `sudo` |
+| `env_file ... required` / unknown key errors | Docker Compose is older than 2.24; update it |
+| Web UI shows 401 errors | Paste the key from `.env` under **Settings → API key** |

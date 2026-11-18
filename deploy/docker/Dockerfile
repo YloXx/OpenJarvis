@@ -25,8 +25,8 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
         sh -s -- -y --profile minimal --default-toolchain none && \
-    rustup toolchain install 1.88 --profile minimal && \
-    rustup default 1.88
+    rustup toolchain install 1.89 --profile minimal && \
+    rustup default 1.89
 
 WORKDIR /app
 
@@ -35,9 +35,17 @@ WORKDIR /app
 # requirements set; `--no-deps` then installs exactly that set. This is a
 # separate layer from the source copy so dependency installs stay cached when
 # only application code changes.
+#
+# OPENJARVIS_EXTRAS selects the optional-dependency groups baked into the
+# image (space-separated; must include `server`). The default adds the cloud
+# SDKs so ANTHROPIC_API_KEY / GEMINI_API_KEY work out of the box, not only
+# OpenAI. Override with e.g. --build-arg OPENJARVIS_EXTRAS="server memory-faiss".
+ARG OPENJARVIS_EXTRAS="server inference-cloud inference-google"
 COPY pyproject.toml uv.lock README.md ./
 RUN pip install --no-cache-dir uv && \
-    uv export --frozen --no-dev --extra server --no-emit-project > requirements.txt && \
+    uv export --frozen --no-dev --no-emit-project \
+        $(for extra in ${OPENJARVIS_EXTRAS}; do printf -- '--extra %s ' "$extra"; done) \
+        > requirements.txt && \
     uv pip install --system --no-deps -r requirements.txt && \
     uv pip install --system --no-deps "maturin>=1.12.6,<2"
 
@@ -75,8 +83,16 @@ WORKDIR /app
 # $HOME (config/cache/state), which is owned by this user.
 RUN groupadd --system --gid 10001 openjarvis && \
     useradd --system --uid 10001 --gid openjarvis \
-        --create-home --home-dir /home/openjarvis openjarvis
-ENV HOME=/home/openjarvis
+        --create-home --home-dir /home/openjarvis openjarvis && \
+    install -d -o openjarvis -g openjarvis -m 0700 /home/openjarvis/.openjarvis
+ENV HOME=/home/openjarvis \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+# All runtime state (config.toml, memory/traces/telemetry DBs, credentials,
+# skills) lives in /home/openjarvis/.openjarvis. It is pre-created above so a
+# named volume mounted there (docker-compose.yml does this) is owned by
+# `openjarvis` rather than root. No VOLUME directive: it would litter anonymous
+# volumes on one-off `docker run IMAGE <cmd>` calls.
 USER openjarvis
 
 EXPOSE 8000

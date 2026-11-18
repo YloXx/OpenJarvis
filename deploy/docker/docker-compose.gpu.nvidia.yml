@@ -1,8 +1,13 @@
 # NVIDIA GPU override — use with:
-#   docker compose -f deploy/docker/docker-compose.yml -f deploy/docker/docker-compose.gpu.nvidia.yml up
+#   ./install.sh --gpu nvidia
+# or:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.nvidia.yml up -d --build
+# Requires the NVIDIA Container Toolkit on the host.
 
 services:
   jarvis:
+    # Separate tag so CPU and CUDA builds never overwrite each other.
+    image: ${OPENJARVIS_IMAGE:-openjarvis:local-cuda}
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.gpu

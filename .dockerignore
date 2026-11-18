@@ -1,0 +1,54 @@
+# Build context for every image under deploy/docker/ (they all build from the
+# repository root). Keeping this lean makes builds faster and, more importantly,
+# keeps local secrets and host-specific build output out of the images:
+# Dockerfile.sandbox copies the whole context (`COPY . .`), so without this
+# file a filled-in deploy/docker/.env would be baked into that image.
+
+# VCS metadata (pyproject's hatch-vcs falls back to a sentinel version)
+.git
+.worktrees/
+
+# Secrets and local runtime state
+**/.env
+**/.env.*
+!**/.env.example
+*.db
+*.sqlite
+*.log
+results/
+logs/
+/traces/
+
+# Python environments and caches
+.venv/
+venv/
+env/
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Host build output. node_modules in particular must never be copied over the
+# image's own `npm ci` result: it may hold binaries for another OS/arch.
+frontend/node_modules/
+frontend/dist/
+frontend/src-tauri/target/
+rust/target/
+src/openjarvis/server/static/
+site/
+
+# The Tauri desktop app is not part of any container image
+desktop/
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

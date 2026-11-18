@@ -47,6 +47,7 @@ Pick your platform and run one command. Each installer handles [uv](https://docs
 | **macOS · Linux · WSL2** | `curl -fsSL https://open-jarvis.github.io/OpenJarvis/install.sh \| bash` |
 | **Native Windows** | `irm https://open-jarvis.github.io/OpenJarvis/install.ps1 \| iex` |
 | **Desktop GUI** | Download `.exe` / `.dmg` / `.deb` / `.rpm` / `.AppImage` from the [latest release](https://github.com/open-jarvis/OpenJarvis/releases/latest) |
+| **Docker** (server + web UI + Ollama) | `git clone https://github.com/open-jarvis/OpenJarvis.git && OpenJarvis/deploy/docker/install.sh` — see [Docker deployment](https://open-jarvis.github.io/OpenJarvis/deployment/docker/) |
 
 Then `jarvis` to start. The Rust extension and larger models continue downloading in the background; `jarvis doctor` shows status.
 
