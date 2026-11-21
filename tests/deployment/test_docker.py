@@ -378,6 +378,14 @@ class TestComposeInstall:
         # The slim runtime image has no curl.
         assert "curl" not in joined and "python3" in joined
 
+    def test_web_ui_default_host_port(self):
+        # Host port 1337 maps to the server's fixed container port 8000; the
+        # installer and .env template must agree with the compose default.
+        ports = self._compose()["services"]["jarvis"]["ports"]
+        assert ports == ["${OPENJARVIS_BIND:-127.0.0.1}:${OPENJARVIS_PORT:-1337}:8000"]
+        assert "OPENJARVIS_PORT=1337" in (DOCKER_DIR / ".env.example").read_text()
+        assert 'port="${port:-1337}"' in (DOCKER_DIR / "install.sh").read_text()
+
     def test_ollama_only_published_on_loopback(self):
         # Ollama has no authentication; it must not be exposed on the network.
         for port in self._compose()["services"]["ollama"]["ports"]:

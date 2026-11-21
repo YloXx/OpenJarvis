@@ -51,7 +51,7 @@ services:
       # Loopback-only by default. Set OPENJARVIS_BIND=0.0.0.0 in .env to reach
       # the server from other machines (put TLS in front of it for anything
       # beyond a trusted LAN: the API key travels in every request).
-      - "${OPENJARVIS_BIND:-127.0.0.1}:${OPENJARVIS_PORT:-8000}:8000"
+      - "${OPENJARVIS_BIND:-127.0.0.1}:${OPENJARVIS_PORT:-1337}:8000"
     volumes:
       # config.toml, memory/traces/telemetry DBs, credentials, skills.
       - openjarvis-data:/home/openjarvis/.openjarvis

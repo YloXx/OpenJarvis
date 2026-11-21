@@ -46,7 +46,7 @@ Options:
   --gpu cpu|nvidia|rocm   Image variant (default: keep the previous choice, else cpu).
                           nvidia needs the NVIDIA Container Toolkit.
   --model NAME            Ollama model to serve, e.g. qwen3.5:9b (default: qwen3.5:2b).
-  --port N                Host port for the web UI + API (default: 8000).
+  --port N                Host port for the web UI + API (default: 1337).
   --bind ADDR             Host interface to publish on (default: 127.0.0.1).
   --lan                   Shorthand for --bind 0.0.0.0 (reachable from your network).
   -h, --help              Show this help.
@@ -243,7 +243,7 @@ api_key="$(env_get OPENJARVIS_API_KEY)"
 model="$(env_get OPENJARVIS_MODEL)"
 model="${model:-qwen3.5:2b}"
 port="$(env_get OPENJARVIS_PORT)"
-port="${port:-8000}"
+port="${port:-1337}"
 bind="$(env_get OPENJARVIS_BIND)"
 bind="${bind:-127.0.0.1}"
 

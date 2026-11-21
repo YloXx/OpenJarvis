@@ -28,7 +28,7 @@ The installer:
 5. starts OpenJarvis and waits until its health check passes;
 6. prints the URL and the API key.
 
-Open the printed URL (default <http://127.0.0.1:8000>), go to
+Open the printed URL (default <http://127.0.0.1:1337>), go to
 **Settings → API key** and paste the key. That's it.
 
 ### Installer options
@@ -37,7 +37,7 @@ Open the printed URL (default <http://127.0.0.1:8000>), go to
 |---|---|
 | `--model NAME` | Ollama model to serve and pre-pull, e.g. `qwen3.5:9b` |
 | `--gpu cpu\|nvidia\|rocm` | Image variant. `nvidia` requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) |
-| `--port N` | Host port for the web UI + API (default `8000`) |
+| `--port N` | Host port for the web UI + API (default `1337`) |
 | `--bind ADDR` / `--lan` | Host interface to publish on. Default `127.0.0.1` (this machine only); `--lan` publishes on `0.0.0.0` |
 
 Every choice is written to `deploy/docker/.env` (the GPU variant as
@@ -76,7 +76,7 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.nvidia.yml up -d --bu
 
 | Service | Port (host) | Description |
 |---|---|---|
-| `jarvis` | `127.0.0.1:8000` | OpenJarvis API server (OpenAI-compatible `/v1`) and web UI |
+| `jarvis` | `127.0.0.1:1337` | OpenJarvis API server (OpenAI-compatible `/v1`) and web UI |
 | `ollama` | `127.0.0.1:11434` | Ollama inference engine. Loopback only: Ollama has no authentication |
 | `ollama-pull` | – | One-shot job that pulls missing models, then exits |
 
@@ -98,7 +98,7 @@ tokens) can be added there too.
 | `OPENJARVIS_MODEL` | `qwen3.5:2b` | Default model served by OpenJarvis |
 | `OLLAMA_PULL` | `$OPENJARVIS_MODEL` | Space-separated models to pre-pull; empty skips pulling |
 | `OPENJARVIS_BIND` | `127.0.0.1` | Host interface for the web UI + API |
-| `OPENJARVIS_PORT` | `8000` | Host port for the web UI + API |
+| `OPENJARVIS_PORT` | `1337` | Host port for the web UI + API |
 | `OLLAMA_PORT` | `11434` | Host port for Ollama (always loopback) |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` | – | Enable cloud models next to the local ones |
 | `OPENJARVIS_EXTRAS` | `server inference-cloud inference-google` | Optional-dependency groups baked into the image (build time; must include `server`) |
@@ -112,7 +112,7 @@ when you changed `OPENJARVIS_EXTRAS`).
 
 Set `OPENJARVIS_BIND=0.0.0.0` (or run `install.sh --lan`). The API key is sent
 with every request, so on anything other than a trusted network put a TLS
-reverse proxy (Caddy, Traefik, nginx) in front of port 8000 instead of exposing
+reverse proxy (Caddy, Traefik, nginx) in front of port 1337 instead of exposing
 it directly.
 
 ### Using a cloud model
@@ -133,16 +133,16 @@ Local Ollama models stay available alongside the cloud ones.
 ```bash
 KEY=$(grep '^OPENJARVIS_API_KEY=' deploy/docker/.env | cut -d= -f2-)
 
-curl http://127.0.0.1:8000/health            # no key needed
+curl http://127.0.0.1:1337/health            # no key needed
 
-curl http://127.0.0.1:8000/v1/models -H "Authorization: Bearer $KEY"
+curl http://127.0.0.1:1337/v1/models -H "Authorization: Bearer $KEY"
 
-curl http://127.0.0.1:8000/v1/chat/completions \
+curl http://127.0.0.1:1337/v1/chat/completions \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
   -d '{"model": "qwen3.5:2b", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
-Any OpenAI-compatible client works with base URL `http://127.0.0.1:8000/v1`
+Any OpenAI-compatible client works with base URL `http://127.0.0.1:1337/v1`
 and the key as its API key.
 
 ## Data and Persistence
@@ -237,7 +237,7 @@ export OPENJARVIS_API_KEY="$(openssl rand -hex 32)"
 docker run -d --name openjarvis \
   -e OPENJARVIS_API_KEY \
   -v openjarvis-data:/home/openjarvis/.openjarvis \
-  -p 127.0.0.1:8000:8000 \
+  -p 127.0.0.1:1337:8000 \
   openjarvis:local
 ```
 
